@@ -1,0 +1,99 @@
+# Games that game-scene knows how to run. No ROMs are included: put your own in the ROM directory
+# (~/.local/share/asciiscape/roms by default, or $ASCIISCAPE_ROMS, or `roms = [...]` below). See roms/README.md.
+#
+# Add your own games, or change these, in ~/.config/asciiscape/games.toml: same format, merged table by table.
+# Anything not listed is still found: console ROMs by extension ([system.*] below), arcade .zip files by asking MAME.
+#
+# [game.NAME]            NAME is what you pass to `game-scene NAME` and what the lock-screen shuffle bag deals
+#   title     shown by --list
+#   files     file name patterns (case-insensitive) that identify the ROM; ? and * work. Matched on the file name
+#             and on the name without extension.
+#   emulator  "mame" or "libretro"
+#   machine   MAME only: the arcade romset name (dkong, outrun, ...) or the system (genesis, ...)
+#   media     MAME only: set when the file is a cartridge etc. for a system rather than an arcade set ("cart")
+#   core      libretro only: the core's name without _libretro.so
+#   aspect    the picture's real aspect, "4:3", "3:4" (vertical arcade), "10:9"... Bars around it are filled in.
+
+roms = []            # extra ROM directories, besides the default one
+libretro_dirs = []   # extra places to look for *_libretro.so cores
+
+[game.dkong]
+title = "Donkey Kong (arcade)"
+files = ["dkong.zip", "donkey*kong*.zip"]
+emulator = "mame"
+machine = "dkong"
+aspect = "3:4"
+
+[game.outrun]
+title = "OutRun (arcade)"
+files = ["outrun.zip", "out*run*.zip"]
+emulator = "mame"
+machine = "outrun"
+aspect = "4:3"
+
+[game.sonic3k]
+title = "Sonic 3 & Knuckles (Mega Drive / Genesis)"
+files = ["sonic*3*knuckles*", "sonic*and*knuckles*", "sonic3*"]
+emulator = "mame"
+machine = "genesis"
+media = "cart"
+aspect = "4:3"
+
+[game.fzero]
+title = "F-Zero (SNES)"
+files = ["f*zero*"]
+emulator = "libretro"
+core = "bsnes_mercury_performance"
+aspect = "4:3"
+
+# Console systems, picked by file extension for ROMs not listed above (also for .zip files holding one of these).
+# Tested: snes, genesis. The others are reasonable defaults; fix the core or the aspect here if one misbehaves.
+
+[system.snes]
+exts = ["sfc", "smc", "fig"]
+emulator = "libretro"
+core = "bsnes_mercury_performance"
+aspect = "4:3"
+
+[system.nes]
+exts = ["nes"]
+emulator = "libretro"
+core = "nestopia"
+aspect = "4:3"
+
+[system.gameboy]
+exts = ["gb", "gbc"]
+emulator = "libretro"
+core = "gambatte"
+aspect = "10:9"
+
+[system.gba]
+exts = ["gba"]
+emulator = "libretro"
+core = "mgba"
+aspect = "3:2"
+
+[system.pcengine]
+exts = ["pce"]
+emulator = "libretro"
+core = "mednafen_pce_fast"
+aspect = "4:3"
+
+[system.atari2600]
+exts = ["a26"]
+emulator = "libretro"
+core = "stella2014"
+aspect = "4:3"
+
+[system.atari7800]
+exts = ["a78"]
+emulator = "libretro"
+core = "prosystem"
+aspect = "4:3"
+
+[system.genesis]
+exts = ["md", "gen", "smd"]
+emulator = "mame"
+machine = "genesis"
+media = "cart"
+aspect = "4:3"

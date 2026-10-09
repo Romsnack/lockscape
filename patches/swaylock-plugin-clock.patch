@@ -1,0 +1,45 @@
+diff --git a/render.c b/render.c
+index 27a0633..c4d5f10 100644
+--- a/render.c
++++ b/render.c
+@@ -1,4 +1,5 @@
+ #include <math.h>
++#include <time.h>
+ #include <stdlib.h>
+ #include <stdio.h>
+ #include <wayland-client.h>
+@@ -97,6 +98,7 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 	// determines the size/positioning of the surface
+ 
+ 	char attempts[4]; // like i3lock: count no more than 999
++	char clock_text[16], date_text[64]; // shown in and under the ring while it is visible
+ 	char *text = NULL;
+ 	const char *layout_text = NULL;
+ 
+@@ -125,6 +127,12 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 					snprintf(attempts, sizeof(attempts), "%d", state->failed_attempts);
+ 					text = attempts;
+ 				}
++			} else {
++				time_t now = time(NULL);
++				struct tm tm;
++				localtime_r(&now, &tm);
++				strftime(clock_text, sizeof(clock_text), "%H:%M", &tm);
++				text = clock_text;
+ 			}
+ 
+ 			if (state->xkb.keymap) {
+@@ -143,6 +151,13 @@ static bool render_frame(struct swaylock_surface *surface) {
+ 					layout_text = xkb_keymap_layout_get_name(state->xkb.keymap, curr_layout);
+ 				}
+ 			}
++			if (!layout_text) {
++				time_t now = time(NULL);
++				struct tm tm;
++				localtime_r(&now, &tm);
++				strftime(date_text, sizeof(date_text), "%A %d %B", &tm);
++				layout_text = date_text;
++			}
+ 		}
+ 	}
+ 

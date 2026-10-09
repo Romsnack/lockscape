@@ -1,0 +1,70 @@
+#!/bin/bash
+# Lock the screen with a random asciiscape animation (or a real game's demo) behind swaylock-plugin.
+# The password ring stays hidden until you start typing; if swaylock-plugin carries the clock patch
+# (patches/swaylock-plugin-clock.patch) it then shows the time, with the date below.
+# Falls back to the regular swaylock when swaylock-plugin, windowtolayer or foot is missing.
+# Extra arguments (e.g. -f) are passed through to the locker.
+#
+#   ascii-lock                               lock with whatever the shuffle bag deals next
+#   echo dkong >> ~/.cache/ascii-lock-next   play that game on the next lock (one name per line, see game-scene --list)
+
+here=$(dirname "$(readlink -f "$0")")
+asciiscape="$here/asciiscape"
+game_scene="$here/game-scene"
+w2l=$(command -v windowtolayer || echo "$HOME/.local/bin/windowtolayer")
+if ! command -v swaylock-plugin >/dev/null || ! command -v foot >/dev/null || [ ! -x "$w2l" ]; then
+    exec swaylock "$@"
+fi
+# Already locked? Only count lockers on this compositor, so a test lock on another (e.g. headless) sway doesn't block this one.
+for p in $(pgrep -x swaylock-plugin); do
+    tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null | grep -qx "WAYLAND_DISPLAY=${WAYLAND_DISPLAY:-wayland-0}" && exit 0
+done
+
+config="${XDG_CONFIG_HOME:-$HOME/.config}"
+cache="${XDG_CACHE_HOME:-$HOME/.cache}"
+
+# swaylock-plugin is plain swaylock underneath, so drop the swaylock-effects-only options from your swaylock
+# config (the clock comes from the optional patch to swaylock-plugin). No config? Then plain defaults.
+src="$config/swaylock/config"
+conf="$config/swaylock/plugin-config"
+mkdir -p "$config/swaylock"
+# Background colour behind the animation: the theme's `surface`, as for asciiscape itself.
+bg=""
+for theme in "$ASCIISCAPE_THEME" "$config/asciiscape/theme" "$config/swaylock/noctalia-colors"; do
+    [ -r "$theme" ] && bg=$(grep -m1 '^surface=' "$theme" | cut -d= -f2) && [ -n "$bg" ] && break
+done
+bg=${bg:-131313}
+{ [ -r "$src" ] && grep -vE '^(screenshots|effect-[a-z-]+|fade-in|clock|timestr|datestr|indicator)(=.*)?$' "$src"; } > "$conf"
+echo "color=$bg" >> "$conf"
+# Style the date box under the ring like the ring itself
+inside=$(grep -m1 '^inside-color=' "$conf" | cut -d= -f2)
+text=$(grep -m1 '^text-color=' "$conf" | cut -d= -f2)
+{ echo "layout-bg-color=${inside:-${bg}cc}"; echo "layout-border-color=00000000"
+  echo "layout-text-color=${text:-e2e2e2ff}"; } >> "$conf"
+
+# Background programs only get wlr-layer-shell, so windowtolayer adapts foot's window to it.
+# windowtolayer's default --interactivity=none means the animation never receives keystrokes.
+log="$cache/ascii-lock.log"
+mkdir -p "$cache"
+[ "$(stat -c %s "$log" 2>/dev/null || echo 0)" -gt 200000 ] && : > "$log"
+echo "=== $(date) locking" >> "$log"
+# Queue of games to play on the next locks, one name per line, e.g. `printf 'dkong\noutrun\n' >> ~/.cache/ascii-lock-next`.
+# Each lock takes the first line (game-scene picks the game); when the file is empty, locks are normal again.
+scene="foot -o pad=0x0 $asciiscape"
+fit=""
+next="$cache/ascii-lock-next"
+if [ -s "$next" ]; then
+    game=$(head -n1 "$next" | tr -cd 'a-z0-9_-')
+    tail -n +2 "$next" > "$next.tmp" && mv "$next.tmp" "$next"
+    [ -s "$next" ] || rm -f "$next"
+    [ -x "$game_scene" ] && [ -n "$game" ] && { scene="$game_scene $game"; fit=-m; }
+else
+    # Normal lock: the shuffle bag deals either an asciiscape scene or a real game (game:NAME).
+    pick=$("$asciiscape" --pick 2>/dev/null)
+    case "$pick" in
+        game:*) scene="$game_scene ${pick#game:}"; fit=-m ;;
+        ?*)     scene="$scene --mode $pick" ;;
+    esac
+fi
+exec swaylock-plugin -C "$conf" "$@" --command-each \
+    "$w2l --dummy-seat $fit -- $scene >> $log 2>&1"

@@ -1,0 +1,4 @@
+# ROMs are never committed
+*
+!.gitignore
+!README.md

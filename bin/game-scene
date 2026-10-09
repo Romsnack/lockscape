@@ -1,0 +1,557 @@
+#!/usr/bin/env python3
+"""game-scene: run a real game, in whatever attract/demo mode it has, as a lock-screen scene.
+
+  game-scene NAME                 play NAME (used by ascii-lock through windowtolayer; no sound, no input)
+  game-scene --list [--all]       games whose ROM was found (--all: also the ones still missing a ROM)
+  game-scene --list --names       just the names, one per line (this is what asciiscape's shuffle bag reads)
+  game-scene NAME --dry-run       print the emulator command and the generated files, run nothing
+
+ROMs are never shipped: put your own dumps in $ASCIISCAPE_ROMS (default ~/.local/share/asciiscape/roms, see
+roms/README.md). Games are recognised from share/games.toml (known titles), from the file extension (consoles),
+or by asking MAME whether a .zip is an arcade romset. ~/.config/asciiscape/games.toml adds or overrides entries.
+
+The black bars of a game that does not fill the screen are filled with the game's own picture, mirrored and
+dimmed (MAME: a generated layout; RetroArch: a generated shader), sized for the real game and screen aspect.
+Games are run at idle CPU priority, frozen while every screen is off, and if one cannot start or keeps dying
+the lock falls back to a text scene from asciiscape.
+"""
+
+import argparse
+import fnmatch
+import json
+import os
+import re
+import shutil
+import signal
+import subprocess
+import sys
+import time
+import zipfile
+from dataclasses import dataclass
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:  # Python < 3.11
+    sys.exit("game-scene needs Python 3.11 or newer (tomllib)")
+
+HOME = Path.home()
+XDG_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
+XDG_DATA = Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local/share")
+XDG_STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
+XDG_CACHE = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache")
+
+HERE = Path(__file__).resolve().parent  # bin/ of the checkout, even when run through a symlink
+REGISTRY_FILES = [HERE.parent / "share/games.toml", XDG_DATA / "asciiscape/games.toml", XDG_CONFIG / "asciiscape/games.toml"]
+WORK = XDG_STATE / "asciiscape/game-scene"
+CACHE_FILE = XDG_CACHE / "asciiscape/game-scene.json"
+LIBRETRO_DIRS = ["/usr/lib64/libretro", "/usr/lib/libretro", "/usr/lib/x86_64-linux-gnu/libretro",
+                 "/usr/lib/aarch64-linux-gnu/libretro", str(XDG_CONFIG / "retroarch/cores")]
+ROM_EXTS = {".zip", ".7z"}
+SIDE_DIM = 0.68  # how much of the mirrored picture in the bars is dimmed towards black
+FALLBACK_AFTER = (3, 30)  # this many starts within this many seconds: stop trying, show a text scene
+
+
+def log(msg):
+    print(f"game-scene: {msg}", file=sys.stderr)
+
+
+# -- registry ------------------------------------------------------------------
+
+def load_registry():
+    """Merge the registry files: later files override earlier ones table by table."""
+    reg = {"game": {}, "system": {}, "roms": [], "libretro_dirs": []}
+    for path in REGISTRY_FILES:
+        try:
+            data = tomllib.loads(path.read_text())
+        except OSError:
+            continue
+        except tomllib.TOMLDecodeError as e:
+            log(f"ignoring {path}: {e}")
+            continue
+        for kind in ("game", "system"):
+            for name, entry in data.get(kind, {}).items():
+                reg[kind].setdefault(name, {}).update(entry)
+        reg["roms"] += data.get("roms", [])
+        reg["libretro_dirs"] += data.get("libretro_dirs", [])
+    return reg
+
+
+def parse_aspect(value):
+    if isinstance(value, (int, float)):
+        return float(value)
+    a, _, b = str(value).partition(":")
+    return float(a) / float(b) if b else float(a)
+
+
+def rom_dirs(reg):
+    env = os.environ.get("ASCIISCAPE_ROMS")
+    dirs = env.split(":") if env else [str(XDG_DATA / "asciiscape/roms")] + reg["roms"]
+    return [Path(d).expanduser() for d in dirs if d]
+
+
+def slug(text):
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-") or "game"
+
+
+def find_files(dirs, depth=2):
+    """Every file under the ROM directories, at most `depth` levels down."""
+    out = []
+    for root in dirs:
+        root_depth = len(root.parts)
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=True):
+            if len(Path(dirpath).parts) - root_depth >= depth:
+                dirnames[:] = []
+            out += [Path(dirpath, f) for f in sorted(filenames) if not f.startswith(".")]
+    return out
+
+
+def libretro_core(reg, core):
+    for d in reg["libretro_dirs"] + LIBRETRO_DIRS:
+        path = Path(d).expanduser() / f"{core}_libretro.so"
+        if path.exists():
+            return path
+    return None
+
+
+# -- games ---------------------------------------------------------------------
+
+@dataclass
+class Game:
+    name: str
+    title: str
+    emulator: str  # "mame" or "libretro"
+    rom: Path | None
+    aspect: float
+    machine: str = ""  # MAME: arcade romset or system name
+    media: str = ""  # MAME: "cart" etc. when `rom` is a media file for a system rather than an arcade set
+    core: str = ""  # libretro core name, e.g. nestopia
+    core_path: Path | None = None
+    problem: str = ""  # why it cannot run, if it cannot
+
+    def runnable(self):
+        return not self.problem
+
+
+def load_cache():
+    try:
+        return json.loads(CACHE_FILE.read_text())
+    except (OSError, ValueError):
+        return {}
+
+
+def save_cache(cache):
+    try:
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        CACHE_FILE.write_text(json.dumps(cache))
+    except OSError:
+        pass
+
+
+def mame_env():
+    env = dict(os.environ)
+    env.update(XDG_CONFIG_HOME=str(XDG_CONFIG), XDG_DATA_HOME=str(XDG_DATA), XDG_STATE_HOME=str(XDG_STATE))
+    return env
+
+
+def arcade_info(rom, rompath, cache):
+    """(setname, aspect) if MAME recognises this zip as a complete arcade romset, else None. Cached per file."""
+    st = rom.stat()
+    key = f"arcade:{rom}:{st.st_size}:{int(st.st_mtime)}"
+    if key in cache:
+        return tuple(cache[key]) if cache[key] else None
+    result = None
+    mame = shutil.which("mame")
+    setname = rom.stem.lower()
+    if mame:
+        try:
+            ok = subprocess.run([mame, "-rompath", rompath, "-verifyroms", setname], env=mame_env(),
+                                capture_output=True, text=True, timeout=30)
+            xml = subprocess.run([mame, "-listxml", setname], env=mame_env(), capture_output=True, text=True, timeout=30).stdout
+            runnable = re.search(rf'<machine name="{re.escape(setname)}"[^>]*>', xml) and 'runnable="no"' not in \
+                re.search(rf'<machine name="{re.escape(setname)}"[^>]*>', xml).group(0)
+            if ok.returncode == 0 and runnable:
+                disp = re.search(r'<display [^>]*rotate="(\d+)"', xml)
+                vertical = bool(disp) and disp.group(1) in ("90", "270")
+                result = (setname, 3 / 4 if vertical else 4 / 3)
+        except (OSError, subprocess.SubprocessError):
+            return None  # try again next time instead of caching a failure
+    cache[key] = list(result) if result else None
+    return result
+
+
+def zip_system(rom, systems):
+    """The console system a zip holds a ROM for, from the extension of what is inside."""
+    try:
+        with zipfile.ZipFile(rom) as z:
+            for member in z.namelist():
+                ext = Path(member).suffix.lower().lstrip(".")
+                for name, s in systems.items():
+                    if ext in s.get("exts", []):
+                        return name
+    except (OSError, zipfile.BadZipFile):
+        pass
+    return None
+
+
+def make_game(name, title, entry, rom, reg):
+    """Turn a registry/system entry plus a ROM file into a Game, noting what is missing to run it."""
+    g = Game(name, title, entry.get("emulator", "mame"), rom, parse_aspect(entry.get("aspect", "4:3")),
+             machine=entry.get("machine", ""), media=entry.get("media", ""), core=entry.get("core", ""))
+    if g.emulator == "libretro":
+        g.core_path = libretro_core(reg, g.core)
+        if not shutil.which("retroarch"):
+            g.problem = "retroarch is not installed"
+        elif not g.core_path:
+            g.problem = f"libretro core {g.core!r} is not installed"
+    elif g.emulator == "mame":
+        if not shutil.which("mame"):
+            g.problem = "mame is not installed"
+    else:
+        g.problem = f"unknown emulator {g.emulator!r}"
+    return g
+
+
+def discover(reg, want_all=False):
+    """Find every playable game: {name: Game}. With want_all also registry games that have no ROM (rom=None)."""
+    dirs = rom_dirs(reg)
+    files = find_files([d for d in dirs if d.is_dir()])
+    games, used = {}, set()
+    cache = load_cache()
+    dirty = False
+
+    for name, entry in reg["game"].items():
+        pats = [p.lower() for p in entry.get("files", [name])]
+        hit = next((f for f in files if any(fnmatch.fnmatch(f.name.lower(), p) or fnmatch.fnmatch(f.stem.lower(), p)
+                                            for p in pats)), None)
+        if hit:
+            used.add(hit)
+            games[name] = make_game(name, entry.get("title", name), entry, hit, reg)
+        elif want_all:
+            g = make_game(name, entry.get("title", name), entry, None, reg)
+            g.problem = g.problem or "ROM not found"
+            games[name] = g
+
+    rompath = ";".join(str(d) for d in dirs if d.is_dir())
+    for f in files:
+        if f in used:
+            continue
+        ext = f.suffix.lower()
+        system = next((s for s, e in reg["system"].items() if ext.lstrip(".") in e.get("exts", [])), None)
+        if not system and ext in ROM_EXTS:
+            system = zip_system(f, reg["system"]) if ext == ".zip" else None
+        if system:
+            n = slug(f.stem.split("(")[0])
+            entry = reg["system"][system]
+            games.setdefault(n, make_game(n, f.stem, entry, f, reg))
+        elif ext == ".zip":
+            info = arcade_info(f, rompath, cache)
+            dirty = True
+            if info:
+                setname, aspect = info
+                entry = {"emulator": "mame", "machine": setname, "aspect": aspect}
+                games.setdefault(setname, make_game(setname, setname, entry, f, reg))
+    if dirty:
+        save_cache(cache)
+    return games
+
+
+# -- screen and layouts ----------------------------------------------------------
+
+def screen_aspect(override=None):
+    """Aspect ratio of the screen the game will fill: --screen / $ASCIISCAPE_SCREEN, else the compositor, else 16:9."""
+    spec = override or os.environ.get("ASCIISCAPE_SCREEN")
+    if spec:
+        m = re.fullmatch(r"(\d+)x(\d+)", spec)
+        if m:
+            return int(m[1]) / int(m[2])
+        log(f"ignoring screen size {spec!r}, expected WIDTHxHEIGHT")
+    sizes = []
+    try:
+        if shutil.which("swaymsg"):
+            out = subprocess.run(["swaymsg", "-t", "get_outputs", "-r"], capture_output=True, text=True, timeout=3).stdout
+            sizes = [(o["current_mode"]["width"], o["current_mode"]["height"]) for o in json.loads(out)
+                     if o.get("active", True) and o.get("current_mode")]
+        elif shutil.which("wlr-randr"):
+            out = subprocess.run(["wlr-randr", "--json"], capture_output=True, text=True, timeout=3).stdout
+            sizes = [(m["width"], m["height"]) for o in json.loads(out) if o.get("enabled", True)
+                     for m in o.get("modes", []) if m.get("current")]
+    except (OSError, ValueError, KeyError, subprocess.SubprocessError):
+        pass
+    if not sizes:
+        return 16 / 9
+    # one game-scene runs per output; with mixed aspects pick the most common one
+    w, h = max(set(sizes), key=lambda s: (sizes.count(s), -sizes.index(s)))
+    return w / h
+
+
+def mame_layout(game_aspect, scr_aspect):
+    """MAME artwork: the game at full size and true aspect, bars filled with mirrored, dimmed copies of itself."""
+    H = 1080
+    W = round(H * scr_aspect)
+    out = ['<?xml version="1.0"?>',
+           "<!-- Generated by game-scene: the game at true aspect; the bars show its own edge, mirrored and dimmed. -->",
+           '<mamelayout version="2">',
+           '  <element name="black"><rect><color red="0" green="0" blue="0"/></rect></element>',
+           f'  <element name="dim"><rect><color red="0" green="0" blue="0" alpha="{SIDE_DIM}"/></rect></element>',
+           f'  <view name="Ambient">\n    <bounds x="0" y="0" width="{W}" height="{H}"/>',
+           f'    <element ref="black"><bounds x="0" y="0" width="{W}" height="{H}"/></element>']
+
+    def screen(x, y, w, h, flip=""):
+        orient = f'<orientation {flip}="yes"/>' if flip else ""
+        return f'    <screen index="0"><bounds x="{x}" y="{y}" width="{w}" height="{h}"/>{orient}</screen>'
+
+    if game_aspect <= scr_aspect:  # side bars
+        gw = round(H * game_aspect)
+        x0 = (W - gw) // 2
+        n = min(8, -(-x0 // gw))  # mirrored copies needed to cover a bar
+        for i in range(1, n + 1):
+            flip = "flipx" if i % 2 else ""
+            out += [screen(x0 - i * gw, 0, gw, H, flip), screen(x0 + i * gw, 0, gw, H, flip)]
+        if x0 > 0:
+            out += [f'    <element ref="dim"><bounds x="0" y="0" width="{x0}" height="{H}"/></element>',
+                    f'    <element ref="dim"><bounds x="{x0 + gw}" y="0" width="{W - x0 - gw}" height="{H}"/></element>']
+        out.append(screen(x0, 0, gw, H))
+    else:  # the game is wider than the screen: bars above and below
+        gh = round(W / game_aspect)
+        y0 = (H - gh) // 2
+        n = min(8, -(-y0 // gh))
+        for i in range(1, n + 1):
+            flip = "flipy" if i % 2 else ""
+            out += [screen(0, y0 - i * gh, W, gh, flip), screen(0, y0 + i * gh, W, gh, flip)]
+        if y0 > 0:
+            out += [f'    <element ref="dim"><bounds x="0" y="0" width="{W}" height="{y0}"/></element>',
+                    f'    <element ref="dim"><bounds x="0" y="{y0 + gh}" width="{W}" height="{H - y0 - gh}"/></element>']
+        out.append(screen(0, y0, W, gh))
+    out += ["  </view>", "</mamelayout>", ""]
+    return "\n".join(out)
+
+
+GLSL = """// Generated by game-scene: fill the bars around a %(aspect).4f:1 game with its own mirrored edge, dimmed.
+// RetroArch stretches the game over the whole window (video_force_aspect = false); this puts it back at true aspect.
+#if defined(VERTEX)
+attribute vec4 VertexCoord;
+attribute vec2 TexCoord;
+uniform mat4 MVPMatrix;
+varying vec2 vUV;
+void main() {
+    gl_Position = MVPMatrix * VertexCoord;
+    vUV = TexCoord;
+}
+#elif defined(FRAGMENT)
+#ifdef GL_ES
+precision mediump float;
+#endif
+uniform sampler2D Texture;
+uniform vec2 OutputSize;
+uniform vec2 TextureSize;
+uniform vec2 InputSize;
+varying vec2 vUV;
+void main() {
+    vec2 frac = InputSize / TextureSize;
+    vec2 uv = vUV / frac;                                    // 0..1 across the whole screen
+    float k = (OutputSize.x / OutputSize.y) / %(aspect).6f;  // screen aspect in game aspects
+    vec2 g = (uv - 0.5) * vec2(max(k, 1.0), 1.0 / min(k, 1.0)) + 0.5;
+    float inside = (g.x >= 0.0 && g.x <= 1.0 && g.y >= 0.0 && g.y <= 1.0) ? 1.0 : %(keep).2f;
+    g = 1.0 - abs(1.0 - mod(g, 2.0));                        // mirror past any edge
+    gl_FragColor = vec4(texture2D(Texture, g * frac).rgb * inside, 1.0);
+}
+#endif
+"""
+
+RETROARCH_CFG = """audio_driver = "null"
+audio_enable = "false"
+video_fullscreen = "true"
+video_window_show_decorations = "false"
+video_smooth = "false"
+video_vsync = "true"
+pause_nonactive = "false"
+config_save_on_exit = "false"
+savestate_auto_save = "false"
+savestate_auto_load = "false"
+menu_driver = "rgui"
+input_driver = "sdl2"
+notification_show_when_menu_is_alive = "false"
+video_font_enable = "false"
+video_message_pos_x = "0"
+video_force_aspect = "false"
+fps_show = "false"
+video_shader_enable = "true"
+video_shader = "%(shader)s"
+video_driver = "gl"
+video_context_driver = "wayland"
+aspect_ratio_index = "24"
+ui_companion_start_on_boot = "false"
+ui_companion_enable = "false"
+desktop_menu_enable = "false"
+video_windowed_fullscreen = "true"
+"""
+
+
+# -- building the command ----------------------------------------------------------
+
+def build(game, scr_aspect, reg, write=True):
+    """(argv, env, files): the emulator command line and the generated files it needs (path -> text)."""
+    env = mame_env()
+    files = {}
+    if game.emulator == "mame":
+        env["SDL_VIDEODRIVER"] = "wayland"  # opengl is cheap here (-video soft was 90% CPU with the layout)
+        roms = WORK / "roms"
+        dirs = [str(d) for d in rom_dirs(reg) if d.is_dir()]
+        cmd = ["mame"]
+        if game.media:  # a console cartridge: MAME's system, the file as media
+            cmd += [game.machine, f"-{game.media}", str(game.rom)]
+        else:  # an arcade set must be named after the game, so a differently named file gets linked under it
+            cmd += [game.machine]
+            if game.rom.stem.lower() != game.machine:
+                if write:
+                    roms.mkdir(parents=True, exist_ok=True)
+                    link = roms / f"{game.machine}.zip"
+                    if link.is_symlink() or link.exists():
+                        link.unlink()
+                    link.symlink_to(game.rom.resolve())
+                dirs.insert(0, str(roms))
+        files[WORK / "artwork" / game.machine / "default.lay"] = mame_layout(game.aspect, scr_aspect)
+        cmd += ["-window", "-nomax", "-video", "opengl", "-sound", "none", "-nomouse", "-skip_gameinfo", "-nofilter",
+                "-keepaspect", "-numprocessors", "1", "-rompath", ";".join(dirs), "-artpath", str(WORK / "artwork"),
+                "-view", "Ambient", "-cfg_directory", str(WORK / "cfg"), "-nvram_directory", str(WORK / "nvram"),
+                "-snapshot_directory", str(WORK / "snap")]
+    else:
+        env["QT_QPA_PLATFORM"] = "offscreen"  # RetroArch starts a Qt desktop UI that aborts without a usable Qt platform
+        d = WORK / "retroarch"
+        glsl, glslp, cfg = d / "ambient.glsl", d / "ambient.glslp", d / "retroarch.cfg"
+        files[glsl] = GLSL % {"aspect": game.aspect, "keep": 1 - SIDE_DIM}
+        files[glslp] = 'shaders = 1\nshader0 = "ambient.glsl"\nfilter_linear0 = false\n'
+        files[cfg] = RETROARCH_CFG % {"shader": glslp}
+        cmd = ["retroarch", "-L", str(game.core_path), str(game.rom), "--set-shader", str(glslp), "--appendconfig", str(cfg)]
+    if write:
+        for path, text in files.items():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
+        for sub in ("cfg", "nvram", "snap"):
+            (WORK / sub).mkdir(parents=True, exist_ok=True)
+    return cmd, env, files
+
+
+# -- running -----------------------------------------------------------------------
+
+def fall_back(why):
+    """Show a text scene instead of a black screen."""
+    log(why)
+    scene = HERE / "asciiscape"
+    foot = shutil.which("foot")
+    if foot and scene.exists():
+        os.execvp(foot, [foot, "-o", "pad=0x0", str(scene)])
+    sys.exit(1)
+
+
+def too_many_starts(name):
+    """Record this start; True if the game started too often lately (a crash loop: swaylock-plugin respawns us)."""
+    count, window = FALLBACK_AFTER
+    now = int(time.time())
+    path = WORK / f"starts-{name}"
+    try:
+        starts = [int(t) for t in path.read_text().split() if int(t) >= now - window]
+    except (OSError, ValueError):
+        starts = []
+    recent = len(starts)
+    WORK.mkdir(parents=True, exist_ok=True)
+    path.write_text("\n".join(map(str, starts + [now])) + "\n")
+    return recent >= count
+
+
+def displays_on():
+    """True/False if the compositor says whether any screen is on, None if it cannot tell (not sway, no answer)."""
+    if not shutil.which("swaymsg"):
+        return None
+    try:
+        out = subprocess.run(["swaymsg", "-t", "get_outputs", "-r"], capture_output=True, text=True, timeout=3)
+        return any(o.get("power", True) for o in json.loads(out.stdout)) if out.returncode == 0 else None
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+
+
+def play(game, scr_aspect, reg):
+    if too_many_starts(game.name):
+        fall_back(f"{game.name} keeps restarting")
+    cmd, env, _ = build(game, scr_aspect, reg)
+    # SCHED_IDLE where possible: the emulator only gets CPU nobody else wants, so the password prompt stays responsive.
+    cmd = (["chrt", "-i", "0"] if shutil.which("chrt") else ["nice", "-n", "19"]) + cmd
+    parent = os.getppid()
+    child = subprocess.Popen(cmd, env=env)
+
+    def stop(*_):
+        child.kill()
+        sys.exit(0)
+
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, stop)
+    frozen = False
+    try:
+        # The emulator outlives its compositor connection (e.g. windowtolayer dying on unlock), so stop it when our parent goes.
+        while os.getppid() == parent and child.poll() is None:
+            time.sleep(3)
+            on = displays_on()  # freeze the emulator while every screen is off, thaw it when one wakes up
+            if on is False and not frozen:
+                child.send_signal(signal.SIGSTOP)
+                frozen = True
+            elif on and frozen:
+                child.send_signal(signal.SIGCONT)
+                frozen = False
+    finally:
+        if child.poll() is None:
+            child.kill()
+    # A demo never ends by itself: if the emulator died while the lock is still up, don't leave the screen black.
+    if os.getppid() == parent:
+        fall_back(f"{game.name} exited early")
+
+
+def main():
+    ap = argparse.ArgumentParser(description="Play a game's demo mode as a lock-screen scene.")
+    ap.add_argument("name", nargs="?", help="game to play (see --list)")
+    ap.add_argument("--list", action="store_true", help="list the games with a ROM")
+    ap.add_argument("--all", action="store_true", help="with --list: include known games whose ROM is missing")
+    ap.add_argument("--names", action="store_true", help="with --list: only the names of the playable games")
+    ap.add_argument("--dry-run", action="store_true", help="print the command and generated files, run nothing")
+    ap.add_argument("--screen", metavar="WxH", help="screen size to fit the game to (default: ask the compositor)")
+    args = ap.parse_args()
+    reg = load_registry()
+
+    if args.list:
+        games = discover(reg, args.all)
+        if args.names:
+            print("\n".join(n for n, g in games.items() if g.runnable()))
+            return
+        dirs = ", ".join(str(d) for d in rom_dirs(reg))
+        for n, g in games.items():
+            state = g.problem or "ready"
+            print(f"{n:<14} {state:<32} {g.title}" + (f"  ({g.rom})" if g.rom else ""))
+        if not games:
+            print(f"No ROMs found in {dirs}\nSee roms/README.md.")
+        return
+    if not args.name:
+        ap.error("give a game name, or --list")
+    name = re.sub(r"[^a-z0-9_-]", "", args.name.lower())
+    games = discover(reg)
+    game = games.get(name)
+    if not game:
+        if args.dry_run:
+            sys.exit(f"game-scene: no ROM found for {name!r} (try --list --all)")
+        fall_back(f"no ROM found for {name!r}")
+    if not game.runnable():
+        if args.dry_run:
+            sys.exit(f"game-scene: cannot run {name}: {game.problem}")
+        fall_back(f"cannot run {name}: {game.problem}")
+    scr = screen_aspect(args.screen)
+    if args.dry_run:
+        cmd, env, files = build(game, scr, reg, write=False)
+        print(f"{game.title}: {game.emulator}, game aspect {game.aspect:.3f}, screen aspect {scr:.3f}")
+        print(" ".join(cmd))
+        for path, text in files.items():
+            print(f"\n--- {path}\n{text}")
+        return
+    play(game, scr, reg)
+
+
+if __name__ == "__main__":
+    main()

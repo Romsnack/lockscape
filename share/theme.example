@@ -1,0 +1,8 @@
+# Copy to ~/.config/asciiscape/theme (or point $ASCIISCAPE_THEME at a file). Hex colours, no #.
+# Without a theme file the built-in palette below is used.
+primary=f9bc49
+secondary=dbc3a1
+tertiary=b4cea5
+error=ffb4ab
+surface=131313
+on_surface=e2e2e2
