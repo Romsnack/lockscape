@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
-"""Tests for bin/game-scene that need no display. Arcade detection is skipped when mame or the sample ROMs are absent.
+"""Tests for bin/lockscape-game that need no display. Arcade detection is skipped when mame or the sample ROMs are absent.
 
-  python3 dev/test_game_scene.py            (set ASCIISCAPE_TEST_ROMS=dir to also test against real ROMs)
+  python3 dev/test_game_scene.py            (set LOCKSCAPE_TEST_ROMS=dir to also test against real ROMs)
 """
 import importlib.machinery
 import importlib.util
@@ -14,7 +14,7 @@ import zipfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-loader = importlib.machinery.SourceFileLoader("game_scene", str(ROOT / "bin/game-scene"))
+loader = importlib.machinery.SourceFileLoader("game_scene", str(ROOT / "bin/lockscape-game"))
 gs = importlib.util.module_from_spec(importlib.util.spec_from_loader("game_scene", loader))
 loader.exec_module(gs)
 
@@ -59,7 +59,7 @@ class Discovery(unittest.TestCase):
     def setUp(self):
         self.tmp = Path(tempfile.mkdtemp())
         self.addCleanup(shutil.rmtree, self.tmp)
-        os.environ["ASCIISCAPE_ROMS"] = str(self.tmp / "roms")
+        os.environ["LOCKSCAPE_ROMS"] = str(self.tmp / "roms")
         (self.tmp / "roms/sub").mkdir(parents=True)
         gs.CACHE_FILE = self.tmp / "cache.json"
         self.reg = gs.load_registry()
@@ -93,11 +93,11 @@ class Discovery(unittest.TestCase):
         self.assertEqual(all_["dkong"].problem, "ROM not found")
         self.assertNotIn("dkong", gs.discover(self.reg))
 
-    @unittest.skipUnless(shutil.which("mame") and os.environ.get("ASCIISCAPE_TEST_ROMS"), "needs mame and ASCIISCAPE_TEST_ROMS")
+    @unittest.skipUnless(shutil.which("mame") and os.environ.get("LOCKSCAPE_TEST_ROMS"), "needs mame and LOCKSCAPE_TEST_ROMS")
     def test_unknown_arcade_zip_is_verified_by_mame(self):
-        src = Path(os.environ["ASCIISCAPE_TEST_ROMS"]) / "donkey_kong.zip"
+        src = Path(os.environ["LOCKSCAPE_TEST_ROMS"]) / "donkey_kong.zip"
         if not src.exists():
-            self.skipTest("donkey_kong.zip not in ASCIISCAPE_TEST_ROMS")
+            self.skipTest("donkey_kong.zip not in LOCKSCAPE_TEST_ROMS")
         shutil.copy(src, self.tmp / "roms/dkong.zip")
         (self.tmp / "roms/notmame.zip").write_bytes(b"")
         info = gs.arcade_info(self.tmp / "roms/dkong.zip", str(self.tmp / "roms"), {})
@@ -107,7 +107,7 @@ class Discovery(unittest.TestCase):
 
 class Commands(unittest.TestCase):
     def test_no_hardcoded_home(self):
-        text = (ROOT / "bin/game-scene").read_text()
+        text = (ROOT / "bin/lockscape-game").read_text()
         self.assertNotIn("/home/", text)
 
 

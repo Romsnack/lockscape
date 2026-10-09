@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Test a new asciiscape scene headlessly.
+"""Test a new lockscape scene headlessly.
 
   python3 harness.py scenes/foo.py ClassName [--frames 300] [--png out.png] [--at SECONDS] [--size 160x45]
 
-Loads bin/asciiscape as a module, execs the scene file inside its namespace
+Loads bin/lockscape as a module, execs the scene file inside its namespace
 (so Scene, Canvas, mix, gradient, make_sprite, blit, WHITE... are all available),
 runs the scene at several terminal sizes, reports ms/frame, and optionally renders
 one frame as a PNG (each cell 9x18 px, using the real fg/bg colours) to inspect visually.

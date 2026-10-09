@@ -1,10 +1,10 @@
-# Games that game-scene knows how to run. No ROMs are included: put your own in the ROM directory
-# (~/.local/share/asciiscape/roms by default, or $ASCIISCAPE_ROMS, or `roms = [...]` below). See roms/README.md.
+# Games that lockscape-game knows how to run. No ROMs are included: put your own in the ROM directory
+# (~/.local/share/lockscape/roms by default, or $LOCKSCAPE_ROMS, or `roms = [...]` below). See roms/README.md.
 #
-# Add your own games, or change these, in ~/.config/asciiscape/games.toml: same format, merged table by table.
+# Add your own games, or change these, in ~/.config/lockscape/games.toml: same format, merged table by table.
 # Anything not listed is still found: console ROMs by extension ([system.*] below), arcade .zip files by asking MAME.
 #
-# [game.NAME]            NAME is what you pass to `game-scene NAME` and what the lock-screen shuffle bag deals
+# [game.NAME]            NAME is what you pass to `lockscape-game NAME` and what the lock-screen shuffle bag deals
 #   title     shown by --list
 #   files     file name patterns (case-insensitive) that identify the ROM; ? and * work. Matched on the file name
 #             and on the name without extension.

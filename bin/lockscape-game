@@ -1,19 +1,19 @@
 #!/usr/bin/env python3
-"""game-scene: run a real game, in whatever attract/demo mode it has, as a lock-screen scene.
+"""lockscape-game: run a real game, in whatever attract/demo mode it has, as a lock-screen scene.
 
-  game-scene NAME                 play NAME (used by ascii-lock through windowtolayer; no sound, no input)
-  game-scene --list [--all]       games whose ROM was found (--all: also the ones still missing a ROM)
-  game-scene --list --names       just the names, one per line (this is what asciiscape's shuffle bag reads)
-  game-scene NAME --dry-run       print the emulator command and the generated files, run nothing
+  lockscape-game NAME                 play NAME (used by lockscape-lock through windowtolayer; no sound, no input)
+  lockscape-game --list [--all]       games whose ROM was found (--all: also the ones still missing a ROM)
+  lockscape-game --list --names       just the names, one per line (this is what lockscape's shuffle bag reads)
+  lockscape-game NAME --dry-run       print the emulator command and the generated files, run nothing
 
-ROMs are never shipped: put your own dumps in $ASCIISCAPE_ROMS (default ~/.local/share/asciiscape/roms, see
+ROMs are never shipped: put your own dumps in $LOCKSCAPE_ROMS (default ~/.local/share/lockscape/roms, see
 roms/README.md). Games are recognised from share/games.toml (known titles), from the file extension (consoles),
-or by asking MAME whether a .zip is an arcade romset. ~/.config/asciiscape/games.toml adds or overrides entries.
+or by asking MAME whether a .zip is an arcade romset. ~/.config/lockscape/games.toml adds or overrides entries.
 
 The black bars of a game that does not fill the screen are filled with the game's own picture, mirrored and
 dimmed (MAME: a generated layout; RetroArch: a generated shader), sized for the real game and screen aspect.
 Games are run at idle CPU priority, frozen while every screen is off, and if one cannot start or keeps dying
-the lock falls back to a text scene from asciiscape.
+the lock falls back to a text scene from lockscape.
 """
 
 import argparse
@@ -33,7 +33,7 @@ from pathlib import Path
 try:
     import tomllib
 except ImportError:  # Python < 3.11
-    sys.exit("game-scene needs Python 3.11 or newer (tomllib)")
+    sys.exit("lockscape-game needs Python 3.11 or newer (tomllib)")
 
 HOME = Path.home()
 XDG_CONFIG = Path(os.environ.get("XDG_CONFIG_HOME") or HOME / ".config")
@@ -42,9 +42,9 @@ XDG_STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local/state")
 XDG_CACHE = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache")
 
 HERE = Path(__file__).resolve().parent  # bin/ of the checkout, even when run through a symlink
-REGISTRY_FILES = [HERE.parent / "share/games.toml", XDG_DATA / "asciiscape/games.toml", XDG_CONFIG / "asciiscape/games.toml"]
-WORK = XDG_STATE / "asciiscape/game-scene"
-CACHE_FILE = XDG_CACHE / "asciiscape/game-scene.json"
+REGISTRY_FILES = [HERE.parent / "share/games.toml", XDG_DATA / "lockscape/games.toml", XDG_CONFIG / "lockscape/games.toml"]
+WORK = XDG_STATE / "lockscape/game"
+CACHE_FILE = XDG_CACHE / "lockscape/game.json"
 LIBRETRO_DIRS = ["/usr/lib64/libretro", "/usr/lib/libretro", "/usr/lib/x86_64-linux-gnu/libretro",
                  "/usr/lib/aarch64-linux-gnu/libretro", str(XDG_CONFIG / "retroarch/cores")]
 ROM_EXTS = {".zip", ".7z"}
@@ -53,7 +53,7 @@ FALLBACK_AFTER = (3, 30)  # this many starts within this many seconds: stop tryi
 
 
 def log(msg):
-    print(f"game-scene: {msg}", file=sys.stderr)
+    print(f"lockscape-game: {msg}", file=sys.stderr)
 
 
 # -- registry ------------------------------------------------------------------
@@ -85,8 +85,8 @@ def parse_aspect(value):
 
 
 def rom_dirs(reg):
-    env = os.environ.get("ASCIISCAPE_ROMS")
-    dirs = env.split(":") if env else [str(XDG_DATA / "asciiscape/roms")] + reg["roms"]
+    env = os.environ.get("LOCKSCAPE_ROMS")
+    dirs = env.split(":") if env else [str(XDG_DATA / "lockscape/roms")] + reg["roms"]
     return [Path(d).expanduser() for d in dirs if d]
 
 
@@ -259,8 +259,8 @@ def discover(reg, want_all=False):
 # -- screen and layouts ----------------------------------------------------------
 
 def screen_aspect(override=None):
-    """Aspect ratio of the screen the game will fill: --screen / $ASCIISCAPE_SCREEN, else the compositor, else 16:9."""
-    spec = override or os.environ.get("ASCIISCAPE_SCREEN")
+    """Aspect ratio of the screen the game will fill: --screen / $LOCKSCAPE_SCREEN, else the compositor, else 16:9."""
+    spec = override or os.environ.get("LOCKSCAPE_SCREEN")
     if spec:
         m = re.fullmatch(r"(\d+)x(\d+)", spec)
         if m:
@@ -280,7 +280,7 @@ def screen_aspect(override=None):
         pass
     if not sizes:
         return 16 / 9
-    # one game-scene runs per output; with mixed aspects pick the most common one
+    # one lockscape-game runs per output; with mixed aspects pick the most common one
     w, h = max(set(sizes), key=lambda s: (sizes.count(s), -sizes.index(s)))
     return w / h
 
@@ -290,7 +290,7 @@ def mame_layout(game_aspect, scr_aspect):
     H = 1080
     W = round(H * scr_aspect)
     out = ['<?xml version="1.0"?>',
-           "<!-- Generated by game-scene: the game at true aspect; the bars show its own edge, mirrored and dimmed. -->",
+           "<!-- Generated by lockscape-game: the game at true aspect; the bars show its own edge, mirrored and dimmed. -->",
            '<mamelayout version="2">',
            '  <element name="black"><rect><color red="0" green="0" blue="0"/></rect></element>',
            f'  <element name="dim"><rect><color red="0" green="0" blue="0" alpha="{SIDE_DIM}"/></rect></element>',
@@ -327,7 +327,7 @@ def mame_layout(game_aspect, scr_aspect):
     return "\n".join(out)
 
 
-GLSL = """// Generated by game-scene: fill the bars around a %(aspect).4f:1 game with its own mirrored edge, dimmed.
+GLSL = """// Generated by lockscape-game: fill the bars around a %(aspect).4f:1 game with its own mirrored edge, dimmed.
 // RetroArch stretches the game over the whole window (video_force_aspect = false); this puts it back at true aspect.
 #if defined(VERTEX)
 attribute vec4 VertexCoord;
@@ -438,7 +438,7 @@ def build(game, scr_aspect, reg, write=True):
 def fall_back(why):
     """Show a text scene instead of a black screen."""
     log(why)
-    scene = HERE / "asciiscape"
+    scene = HERE / "lockscape"
     foot = shutil.which("foot")
     if foot and scene.exists():
         os.execvp(foot, [foot, "-o", "pad=0x0", str(scene)])
@@ -536,11 +536,11 @@ def main():
     game = games.get(name)
     if not game:
         if args.dry_run:
-            sys.exit(f"game-scene: no ROM found for {name!r} (try --list --all)")
+            sys.exit(f"lockscape-game: no ROM found for {name!r} (try --list --all)")
         fall_back(f"no ROM found for {name!r}")
     if not game.runnable():
         if args.dry_run:
-            sys.exit(f"game-scene: cannot run {name}: {game.problem}")
+            sys.exit(f"lockscape-game: cannot run {name}: {game.problem}")
         fall_back(f"cannot run {name}: {game.problem}")
     scr = screen_aspect(args.screen)
     if args.dry_run:

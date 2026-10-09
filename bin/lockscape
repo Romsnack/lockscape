@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""asciiscape: animated ASCII scenes for wallpapers and lock screens.
+"""lockscape: animated ASCII scenes for wallpapers and lock screens.
 
-Scenes are picked at random among those not shown yet this round (tracked in ~/.cache/asciiscape-bag),
+Scenes are picked at random among those not shown yet this round (tracked in ~/.cache/lockscape-bag),
 so every scene shows once before any repeats, even across runs and locks. Every scene picks a random
 variant (rule set, palette, characters, speed), so no two runs look quite the same. Colours come from a small
 `key=hex` theme file (see THEME_FILES below); without one a built-in palette is used.
 
-  asciiscape                 next scene from the bag
-  asciiscape --mode life     a specific scene (see --list)
-  asciiscape --clock         draw a big clock on top (for the lock screen)
-  asciiscape --rotate 600    switch to another scene every 600 seconds
+  lockscape                 next scene from the bag
+  lockscape --mode life     a specific scene (see --list)
+  lockscape --clock         draw a big clock on top (for the lock screen)
+  lockscape --rotate 600    switch to another scene every 600 seconds
 
 In an interactive terminal: n jumps to another scene, q quits.
 """
@@ -30,10 +30,10 @@ from datetime import datetime
 from pathlib import Path
 
 CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-# First existing file wins: $ASCIISCAPE_THEME, then our own, then the colours Noctalia writes for swaylock.
-THEME_FILES = [Path(p) for p in [os.environ.get("ASCIISCAPE_THEME")] if p] + [
-    CONFIG_DIR / "asciiscape/theme", CONFIG_DIR / "swaylock/noctalia-colors"]
-BAG_FILE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "asciiscape-bag"
+# First existing file wins: $LOCKSCAPE_THEME, then our own, then the colours Noctalia writes for swaylock.
+THEME_FILES = [Path(p) for p in [os.environ.get("LOCKSCAPE_THEME")] if p] + [
+    CONFIG_DIR / "lockscape/theme", CONFIG_DIR / "swaylock/noctalia-colors"]
+BAG_FILE = Path(os.environ.get("XDG_CACHE_HOME") or Path.home() / ".cache") / "lockscape-bag"
 DEFAULT_THEME = {"primary": "f9bc49", "secondary": "dbc3a1", "tertiary": "b4cea5",
                  "error": "ffb4ab", "surface": "131313", "on_surface": "e2e2e2"}
 WHITE = (255, 255, 255)
@@ -5088,10 +5088,10 @@ SCENES = {cls.name: cls for cls in [Life, Brain, Ants, Fire, Matrix, Starfield, 
                                     Oregon, Maze3D, Critters, PacketTracer, Pacman, Tron]}
 
 
-# Real games played by game-scene (needs your own ROMs, see roms/README.md); they share the shuffle bag with the
-# scenes above. `game-scene --list --names` prints the name of every game it found a ROM for.
+# Real games played by lockscape-game (needs your own ROMs, see roms/README.md); they share the shuffle bag with the
+# scenes above. `lockscape-game --list --names` prints the name of every game it found a ROM for.
 def installed_games():
-    for exe in (Path(__file__).resolve().with_name("game-scene"), Path.home() / ".local/bin/game-scene"):
+    for exe in (Path(__file__).resolve().with_name("lockscape-game"), Path.home() / ".local/bin/lockscape-game"):
         if exe.exists():
             break
     else:
@@ -5143,7 +5143,7 @@ def draw_clock(canvas, theme):
 def next_scene(names, current=None):
     """Pick a scene not shown yet in this round, so every scene plays once before any repeats.
 
-    ~/.cache/asciiscape-bag lists the scenes already shown this round, oldest first. A scene added
+    ~/.cache/lockscape-bag lists the scenes already shown this round, oldest first. A scene added
     later joins the current round, and a deleted one is simply ignored. Each lock starts a new
     process (one per screen, all at once), hence the file and the lock."""
     if len(names) == 1:

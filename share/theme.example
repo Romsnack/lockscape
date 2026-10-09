@@ -1,4 +1,4 @@
-# Copy to ~/.config/asciiscape/theme (or point $ASCIISCAPE_THEME at a file). Hex colours, no #.
+# Copy to ~/.config/lockscape/theme (or point $LOCKSCAPE_THEME at a file). Hex colours, no #.
 # Without a theme file the built-in palette below is used.
 primary=f9bc49
 secondary=dbc3a1

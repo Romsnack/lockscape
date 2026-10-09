@@ -1,5 +1,5 @@
 #!/bin/bash
-# Install asciiscape: symlink the programs into ~/.local/bin, create the ROM folder, report what is missing.
+# Install lockscape: symlink the programs into ~/.local/bin, create the ROM folder, report what is missing.
 #
 #   ./install.sh                  install into ~/.local/bin
 #   ./install.sh --prefix DIR     install into DIR instead
@@ -26,7 +26,7 @@ while [ $# -gt 0 ]; do
 done
 
 run() { if [ "$dry" = 1 ]; then echo "would: $*"; else "$@"; fi; }
-progs="asciiscape ascii-lock game-scene"
+progs="lockscape lockscape-lock lockscape-game"
 
 if [ "$uninstall" = 1 ]; then
     for p in $progs; do
@@ -34,7 +34,7 @@ if [ "$uninstall" = 1 ]; then
             run rm "$prefix/$p"; echo "removed $prefix/$p"
         fi
     done
-    echo "Left alone: your ROMs, ~/.config/asciiscape and ~/.local/state/asciiscape."
+    echo "Left alone: your ROMs, ~/.config/lockscape and ~/.local/state/lockscape."
     exit 0
 fi
 
@@ -57,7 +57,7 @@ done
 case ":$PATH:" in *":$prefix:"*) ;; *) echo "note: $prefix is not in your PATH" ;; esac
 
 # -- ROM folder ---------------------------------------------------------------
-roms="${ASCIISCAPE_ROMS:-${XDG_DATA_HOME:-$HOME/.local/share}/asciiscape/roms}"
+roms="${LOCKSCAPE_ROMS:-${XDG_DATA_HOME:-$HOME/.local/share}/lockscape/roms}"
 roms=${roms%%:*}
 [ -d "$roms" ] || { run mkdir -p "$roms"; echo "created  $roms  (put your own ROMs here, see roms/README.md)"; }
 
@@ -70,7 +70,7 @@ check() {  # check COMMAND "what it is for" required|optional
     else printf '  %-8s %s: %s\n' "$3" "$1" "$2"; fi
 }
 check python3 "runs everything (3.11 or newer)" REQUIRED
-python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null || echo "  REQUIRED python3 is older than 3.11 (game-scene needs tomllib)"
+python3 -c 'import sys; sys.exit(sys.version_info < (3, 11))' 2>/dev/null || echo "  REQUIRED python3 is older than 3.11 (lockscape-game needs tomllib)"
 check foot "terminal that shows the animations" "for the lock screen"
 check swaylock-plugin "locker that can run a program as its background" "for the lock screen"
 check windowtolayer "turns a window into a lock-screen background (build it with cargo, see README)" "for the lock screen"
@@ -78,9 +78,9 @@ check mame "plays arcade games and Mega Drive / Genesis ROMs" optional
 check retroarch "plays SNES, NES, Game Boy... ROMs through libretro cores" optional
 check chrt "runs games at idle CPU priority" optional
 echo
-"$here/bin/game-scene" --list --all 2>/dev/null | sed 's/^/  /' | head -20 || true
+"$here/bin/lockscape-game" --list --all 2>/dev/null | sed 's/^/  /' | head -20 || true
 echo
-echo "Try it:   asciiscape                 (q quits, n jumps to the next scene)"
-echo "          asciiscape --list          (every scene)"
-echo "          game-scene --list          (games found in your ROM folder)"
-echo "Lock:     ascii-lock                 (see README.md for hooking it to swayidle)"
+echo "Try it:   lockscape                 (q quits, n jumps to the next scene)"
+echo "          lockscape --list          (every scene)"
+echo "          lockscape-game --list          (games found in your ROM folder)"
+echo "Lock:     lockscape-lock                 (see README.md for hooking it to swayidle)"
